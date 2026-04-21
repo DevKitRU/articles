@@ -171,3 +171,226 @@ foreach ($v in "HTTPS_PROXY","HTTP_PROXY","https_proxy","http_proxy") {
 **sing-box как Service** — минимальная зависимость (один Go-бинарник + WinSW-обёртка, всего ~40 МБ), конфиг в JSON, всё прозрачно.
 
 ---
+
+## 6. macOS — проще, но есть нюансы
+
+На macOS всё собирается за три команды:
+
+```bash
+brew install sing-box
+# сгенерить конфиг в ~/.config/sing-box/config.json
+# создать ~/Library/LaunchAgents/com.singbox.vpn.plist
+launchctl load ~/Library/LaunchAgents/com.singbox.vpn.plist
+```
+
+LaunchAgent с `KeepAlive=true` и `RunAtLoad=true` — это тот же паттерн что Windows Service, только нативный для macOS. Падения перезапускает сам, стартует при логоне.
+
+### Gotcha №1: `ALL_PROXY=socks5://...` не работает с Node.js
+
+Первая ошибка, на которую я наступил: поставил `export ALL_PROXY=socks5://127.0.0.1:1080` в `~/.zshrc`, думая что это универсальное. Curl с таким env работает, Python requests — работает. **Node.js fetch / https — игнорирует**. Claude Code (CLI на Node.js) продолжал лететь мимо прокси и ловить 403.
+
+Правильно:
+
+```bash
+export http_proxy=http://127.0.0.1:1080
+export https_proxy=http://127.0.0.1:1080
+export HTTP_PROXY=http://127.0.0.1:1080
+export HTTPS_PROXY=http://127.0.0.1:1080
+```
+
+Схема `http://` на mixed-порт, а не `socks5://`. Sing-box mixed inbound принимает HTTP CONNECT на том же 1080 где слушает SOCKS.
+
+### Gotcha №2: нативный Telegram не читает env-переменные
+
+Нативные macOS-приложения не читают env, только Terminal-инструменты. Для Telegram / Chrome / Safari нужен **системный SOCKS**:
+
+```bash
+networksetup -setsocksfirewallproxy "Wi-Fi" 127.0.0.1 1080
+networksetup -setsocksfirewallproxystate "Wi-Fi" on
+```
+
+Или через GUI: Системные настройки → Сеть → Wi-Fi → Подробнее → Прокси → SOCKS-прокси. После этого все GUI-приложения идут через sing-box.
+
+### Gotcha №3: `detour: direct` у DNS-сервера ломает sing-box
+
+Неочевидная вещь. В конфиге sing-box 1.13+ у DNS-серверов нельзя ставить `detour: direct`:
+
+```json
+{
+  "tag": "local-dns",
+  "type": "udp",
+  "server": "77.88.8.8",
+  "detour": "direct"
+}
+```
+
+Ошибка на старте:
+
+```
+FATAL start service: start dns/udp[local-dns]:
+detour to an empty direct outbound makes no sense
+```
+
+Причём **`sing-box check -c config.json` эту ошибку не ловит** — валидатор говорит OK, но рантайм падает. Правильно — без `detour`, sing-box сам решит:
+
+```json
+{ "tag": "local-dns", "type": "udp", "server": "77.88.8.8" }
+```
+
+Час потерял пока нашёл.
+
+---
+
+## 7. iOS через Shadowrocket — только ручками
+
+Никакого `install.sh` на iOS быть не может — Apple не разрешает программно настраивать VPN из скрипта. Только пошаговая инструкция.
+
+Shadowrocket покупается в **US App Store** за $2.99 (в российском его нет). Дальше:
+
+1. Скопировать VLESS-ссылку из 3x-ui в буфер iPhone
+2. Shadowrocket → плюс → **Импортировать из буфера**
+3. Главный экран → нижняя плашка с режимами → **Прокси** (Global)
+4. Включить VPN
+
+### Безопасные настройки Shadowrocket (можно включать)
+
+- **По требованию → Всегда включено** — Kill Switch (если VPN упал, трафик блокируется)
+- **Разрешения → Уведомления** — статус в iOS уведомлениях
+- **Разрешения → Буфер обмена** — удобный импорт серверов
+
+### Опасные настройки (категорически нельзя)
+
+- **Туннель → Включить все сети** (Force All Networks). Перехватывает трафик на всех сетевых интерфейсах, включая внутренние iOS — iCloud Private Relay, AirDrop, Bonjour. Результат: SSL certificate verification failed на случайных приложениях, крэш всего сетевого стэка iOS.
+- **Общее → Модули**. Модули расшифровывают HTTPS для модификации трафика (адблок, инъекции) — Shadowrocket подменяет SSL-сертификаты своим CA. iOS видит «сертификат не от Apple / банка / Google» и отказывается подключаться. SSL ломается везде.
+- **Прокси → Цепь прокси** — цепочка из 2+ серверов, падает любой — падает вся цепь.
+
+У меня был инцидент: включил Force All Networks по своей ошибке — Shadowrocket крэшнулся, пришлось делать полный сброс. После этого правило простое: **если настройка не в списке «безопасных» — не трогать**.
+
+Полный список безопасных/опасных настроек — в [ios/README.md](https://github.com/DevKitRU/my-vpn-kit/blob/main/ios/README.md) репозитория.
+
+---
+
+## 8. Split-tunneling: «банки на .com» — главная боль, которой нет в других проектах
+
+Стандартный Russia bypass в Hiddify / antizapret-sing-box / runetfreedom работает по двум правилам:
+
+1. `domain_suffix: [".ru", ".рф", ".su"]` — direct
+2. `geoip-ru` (IP-диапазоны РФ по GeoIP базам) — direct
+
+Этого достаточно для сайтов вроде yandex.ru, vk.com (резолвится в RU IP), habr.com (аналогично). Не достаточно для:
+
+| Сервис | Домен | Почему не ловится стандартными правилами |
+|---|---|---|
+| STALCRAFT | `stalcraft.net` | `.net` не в `.ru` суффиксах; Cloudflare IP не в geoip-ru |
+| Mail.ru Games | `my.games`, `my.com` | то же |
+| Xsolla (платежи для игр) | `xsolla.com` | Cloudflare IP, не RU |
+| Gaijin (War Thunder) | `gaijin.net`, `warthunder.com` | CDN не в RU |
+| Steam серверы | `steampowered.com`, `steamcommunity.com` | CDN глобально |
+| Sber международный | `sber.com`, `sberbank.com` | Cloudflare US |
+| Tinkoff | `tinkoff.com` | то же |
+| Wildberries / Ozon (международные API) | `wildberries.com`, `ozon.com` | часть трафика через US CDN |
+
+Эти сервисы **проверяют IP клиента**. Зашёл с канадского IP (через VPN) — получаешь бан региона, кикнут с игрового сервера, банк не даст авторизоваться.
+
+Правильное решение — явно добавить эти TLD в direct-список sing-box:
+
+```json
+{
+  "domain_suffix": [
+    ".ru", ".рф", ".su",
+    "stalcraft.net", "mail.ru", "my.games", "my.com",
+    "vk.com", "vk.ru", "userapi.com",
+    "sberbank.com", "sber.com", "tinkoff.com", "alfabank.com",
+    "steampowered.com", "steamcommunity.com", "steam-chat.com",
+    "xsolla.com", "gaijin.net", "warthunder.com",
+    "wildberries.com", "ozon.com", "avito.com",
+    "gosuslugi.ru", "nalog.gov.ru"
+  ],
+  "action": "route",
+  "outbound": "direct"
+}
+```
+
+В my-vpn-kit эти правила **включены по умолчанию** и распределены по четырём пресетам:
+
+- **default** — базовый Russia bypass с расширенным списком выше
+- **gaming** — с упором на игровые платформы
+- **dev** — только AI/dev-сервисы через VPN, всё остальное direct (максимально приближено к обычному РФ-инету, с VPN-прикрытием только для Anthropic / OpenAI / GitHub)
+- **minimalist** — только `anthropic.com` и `openai.com` через VPN, всё остальное direct
+
+Этот список — то, ради чего стоило делать свой проект. В открытых решениях, которые я видел на момент разработки, такого не было.
+
+---
+
+## 9. Claude-на-VPS — решение проблемы курицы и яйца
+
+Отдельная боль, которая всплыла на этапе написания документации. Если читатель вообще новичок, у него **нет работающего Claude Code** на локальной машине (Anthropic его не пустит из РФ). Ставить npm-пакет через заблокированный API тоже не получится. А мой скилл как раз и нужен, чтобы поставить VPN, — но чтобы запустить скилл, нужен Claude.
+
+Выход, который я использовал сам:
+
+**Claude Code ставится не на локальную машину, а на VPS.** У VPS non-RU IP, Anthropic пускает его без вопросов. Последовательность:
+
+```bash
+# SSH на VPS
+ssh root@твой_VPS
+# Установка Node + Claude Code
+curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+apt install -y nodejs
+npm install -g @anthropic-ai/claude-code
+# Логин — ссылку OAuth открываешь в любом браузере
+claude auth login
+```
+
+Дальше **Claude на VPS** выполняет скилл AndyShaman (поднимает 3x-ui на этом же VPS), получает VLESS-ссылку и **через SSH диктует команды тебе для локальной машины**.
+
+Для SSH с iPhone отлично работает **Termius** — бесплатный SSH-клиент с хорошим GUI. Всю установку можно сделать с телефона: подключился к VPS, запустил Claude, получил команды, переключился на ноут, выполнил. Или через обратный SSH с VPS на локалку (если на Windows включён OpenSSH Server).
+
+Экономит 2-3 часа новичку + избавляет от необходимости покупать временный VPN только чтобы поставить постоянный.
+
+Полный гайд — в [docs/first-time-setup.md](https://github.com/DevKitRU/my-vpn-kit/blob/main/docs/first-time-setup.md) репо.
+
+---
+
+## 10. Что не получилось / не проверено
+
+Для чистоты — список того, что я **не** сделал:
+
+- **Тест на чистой Windows 11 VM** — не проверил. Windows Sandbox на моей машине не запускается (конфликт с Kaspersky — известная несовместимость). Windows 10 Pro — проверено ребутами, работает.
+- **Discord Desktop через sing-box** — не стабилен. Electron капризничает с SOCKS-прокси, иногда зависает на «Starting». Запасной путь — Discord Web в браузере, работает всегда.
+- **TUN через Scheduled Task от SYSTEM** — падал в `LastTaskResult=1`. Не нашёл причину. Обошёл через Windows Service (WinSW) — там от LocalSystem TUN создаётся нормально.
+- **Android-клиент** — не делал. Можно использовать тот же sing-box через [SFA](https://sing-box.sagernet.org/clients/android/), но пресетов под my-vpn-kit нет.
+
+Всё это — кандидаты на следующие итерации через issues.
+
+---
+
+## 11. Итого и ссылки
+
+Сухо:
+
+- **Репо:** [github.com/DevKitRU/my-vpn-kit](https://github.com/DevKitRU/my-vpn-kit), MIT. 23 файла, 3 клиентских скилла + пресеты + troubleshooting.
+- **Серверная часть:** [AndyShaman/3x-ui-skill](https://github.com/AndyShaman/3x-ui-skill) — поднимает 3x-ui на чистой VPS за 10 минут.
+- **Стоимость:** ~670 ₽/мес за VPS (OVH Kimsufi в Канаде). Один раз $2.99 за Shadowrocket на iPhone.
+- **Платформы:** Windows 10/11 (проверено на 10 Pro), macOS Intel/Apple Silicon, iOS (Shadowrocket).
+- **Время установки:** 1-2 часа с нуля (включая аренду VPS и настройку).
+
+### Что в репо посмотреть отдельно
+
+- [windows/install.ps1](https://github.com/DevKitRU/my-vpn-kit/blob/main/windows/install.ps1) — парсер VLESS-ссылки на PowerShell, WinSW-установщик, idempotent env-переменные
+- [shared/presets/](https://github.com/DevKitRU/my-vpn-kit/tree/main/shared/presets) — четыре пресета routing-таблицы, JSON с плейсхолдерами
+- [docs/troubleshooting.md](https://github.com/DevKitRU/my-vpn-kit/blob/main/docs/troubleshooting.md) — FAQ по симптомам (Telegram не грузит / Discord висит / Steam в NA регионе)
+- [docs/first-time-setup.md](https://github.com/DevKitRU/my-vpn-kit/blob/main/docs/first-time-setup.md) — гайд для нулёвого пользователя через Claude-на-VPS + Termius
+
+### Что просит сообщество
+
+PR приветствуются особенно по трём направлениям:
+
+1. **Новые РФ-платформы в direct-список** — если ваш банк / маркетплейс / игра на иностранном TLD и банит не-RU IP, открывайте issue (есть шаблон) с доменами.
+2. **Windows 11 / Windows 10 Home баги** — моя машина Windows 10 Pro, на других версиях могут быть грабли.
+3. **Android-клиент** — пока только iOS, Android не делал.
+
+### Зачем я это сделал
+
+Меня задолбало платить за публичные VPN и ловить реконнекты. Проект — не для денег (MIT, поддержка через issues). Хотелось, чтобы начинающему разработчику в РФ (каким я был ещё год назад) не приходилось тратить день на танцы с клиентами и антивирусами.
+
+Если пригодится — звёздочка на репо приятна. Баги в issues ценнее чем звёздочка.
