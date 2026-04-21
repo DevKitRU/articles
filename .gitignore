@@ -1,0 +1,7 @@
+*.swp
+.DS_Store
+Thumbs.db
+
+# Временные файлы
+*.bak
+*.tmp
