@@ -1,0 +1,452 @@
+<h1>Свой VPN для разработчика в РФ за день: sing-box, Claude Code и 4 скилла под каждую платформу</h1>
+<h2>Контекст — кто я и зачем это</h2>
+<p>Я не профессиональный разработчик. Основная работа — инженер-котельщик (техобслуживание, диагностика котлов). Начиналось всё с желания разобраться со своим сайтом — через Claude Code, не нанимая подрядчика. Затянуло: за несколько месяцев появились телеграм-боты под работу, SaaS-набор для коллег по профессии, блог. Подписка Claude Pro стала рабочим инструментом.</p>
+<p>Параллельно подкрался типичный гнилой момент: подписка на Claude Pro оплачена, а работать через публичный VPN нормально не получается. Логин в Anthropic слетает раз-два в день, каждый раз — это 5-10 минут выбитого из потока. Hiddify с «Russia bypass» решает половину: большинство сайтов открывается, но Mini App газсервис-бота в Telegram не грузится, STALCRAFT ругается на регион, Discord зависает на «Starting». Смена режимов (proxy / system / VPN) помогает одним приложениям и ломает другим. По ощущению — играешь в игру «угадай рабочий режим» без подсказок.</p>
+<p>Потратил условный «один день» (по факту ~10 часов на Windows + часть ночи) на настройку своего VPN с нуля — разобрался со sing-box, Windows Service, routing rules под российскую специфику. Собрал всё в публичный open-source репо, чтобы другим такого же не проходить.</p>
+<p><strong>TL;DR.</strong> Репо: <a href="https://github.com/DevKitRU/my-vpn-kit">github.com/DevKitRU/my-vpn-kit</a>, MIT. Четыре Claude Skills (3 клиентских + 1 серверный от <a href="https://github.com/AndyShaman/3x-ui-skill">AndyShaman</a>), устанавливают полный стек своего VPN за 1-2 часа. Стоимость — ~670 ₽/мес за VPS. Ниже — что работает, что нет, какие грабли и как их обойти.</p>
+<hr />
+<h2>1. Почему именно сейчас болит</h2>
+<p>Три конкретные проблемы накладываются:</p>
+<p><strong>Anthropic блокирует датацентровые российские IP.</strong> <code>claude auth login</code> из РФ даёт <code>403 Forbidden</code>. Решается прокси через свой non-RU VPS с sing-box + VLESS Reality (маскировка под Chrome TLS-fingerprint). Обычный OpenVPN/WireGuard не помогает — их фингерпринт палится. На самом ключе от сервера тоже OVH Канада, без дополнительной маскировки — тоже 403.</p>
+<p><strong>Публичные платные VPN меняют exit-IP.</strong> После переключения Anthropic снова ловит изменившийся fingerprint и выкидывает. Приходится перелогиниться. Для разработчика это ломает рабочий цикл.</p>
+<p><strong>Российские сервисы на иностранных TLD банят не-RU IP.</strong> STALCRAFT (<code>stalcraft.net</code>), игры Mail.ru (<code>my.games</code>, <code>my.com</code>), xsolla, часть банков (<code>sber.com</code>, <code>tinkoff.com</code> — международные страницы), некоторые госсервисы. Если гнать весь трафик через VPN — регион теряется, логин в эти сервисы не проходит. Hiddify с режимом «Russia bypass» закрывает часть через <code>.ru</code> суффикс и <code>geoip-ru</code>, но стандартный список не ловит домены на <code>.com/.net/.io</code>.</p>
+<p>В результате типичный разработчик в РФ держит <strong>два-три прокси одновременно</strong> (для AI-сервисов, для игр, для Telegram) и переключается руками. Я устал и решил собрать один стек.</p>
+<hr />
+<h2>2. Что уже есть в open-source</h2>
+<table>
+<thead>
+<tr>
+<th>Проект</th>
+<th>Что делает</th>
+<th>Звёзд</th>
+<th>Покрывает ли наш кейс</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="https://github.com/SagerNet/sing-box">SagerNet/sing-box</a></td>
+<td>Ядро (универсальный proxy с TUN, VLESS Reality, gvisor)</td>
+<td>23k</td>
+<td>Движок, нужен клиент-обёртка</td>
+</tr>
+<tr>
+<td><a href="https://github.com/savely-krasovsky/antizapret-sing-box">savely-krasovsky/antizapret-sing-box</a></td>
+<td>Генератор rule-sets по спискам Роскомнадзора</td>
+<td>335</td>
+<td>Только <code>.srs</code> файлы, клиент нужен отдельно</td>
+</tr>
+<tr>
+<td><a href="https://github.com/AndyShaman/3x-ui-skill">AndyShaman/3x-ui-skill</a></td>
+<td>Claude Skill: поднимает 3x-ui на VPS с нуля</td>
+<td>34</td>
+<td><strong>Серверная часть — берём её как зависимость</strong></td>
+</tr>
+<tr>
+<td><a href="https://github.com/Nocturnal-ru/singbox-service_single">Nocturnal-ru/singbox-service_single</a></td>
+<td>sing-box как Windows Service, автообновление antizapret</td>
+<td>1</td>
+<td>Похоже на нашу задачу, но малоизвестно и заточено под один use-case</td>
+</tr>
+<tr>
+<td><a href="https://github.com/runetfreedom">runetfreedom/russia-blocked-geosite</a></td>
+<td>Готовые geosite-списки заблокированного в РФ</td>
+<td>—</td>
+<td>Только данные</td>
+</tr>
+</tbody>
+</table>
+<p>Пустая ниша — <strong>клиентский стек, который учитывает «банки на .com» и ориентирован на разработчика с Claude Code</strong>. Именно это я и сделал.</p>
+<hr />
+<h2>3. Архитектура</h2>
+<pre><code>┌────────────────────────────────────┐
+│  VPS с non-RU IP (OVH, Hetzner…)   │
+│  ┌──────────────────────────────┐  │
+│  │ 3x-ui + VLESS Reality        │  │ ← ставится через
+│  │ (AndyShaman/3x-ui-skill)     │  │   AndyShaman/3x-ui-skill
+│  └──────────────────────────────┘  │
+└─────────────┬──────────────────────┘
+              │ VLESS на 443 с utls=chrome
+              │
+┌─────────────▼──────────────────────┐
+│  sing-box клиент (my-vpn-kit)      │
+│  ┌──────────────────────────────┐  │
+│  │ routing rules:               │  │
+│  │  .ru/.рф/.su       → direct  │  │
+│  │  geoip-ru          → direct  │  │
+│  │  stalcraft.net,              │  │
+│  │  mail.ru, sber.com,          │  │
+│  │  tinkoff.com, и т.д.→ direct │  │ ← та самая «банки на .com»
+│  │  всё остальное     → VPN     │  │   боль которая закрывается
+│  └──────────────────────────────┘  │
+└────────────────────────────────────┘
+              │
+   ┌──────────┼──────────┐
+   ▼          ▼          ▼
+ Windows    macOS      iOS
+ Service  LaunchAgent Shadowrocket
+ (WinSW)             (вручную)
+</code></pre>
+<p>На Windows sing-box запускается как Windows Service через WinSW с LocalSystem — стартует до логона, TUN-интерфейс поднимается автоматически, admin-права есть без UAC. На macOS — LaunchAgent (<code>KeepAlive=true</code>) плюс системный SOCKS через Network Preferences. На iOS — Shadowrocket с ручной настройкой (автоматизации в iOS SDK нет).</p>
+<p>Стоимость: <strong>~670 ₽/мес</strong> за OVH Kimsufi. Плюс Shadowrocket $2.99 один раз в US App Store. Всё остальное бесплатно.</p>
+<hr />
+<h2>4. Матрица приложений: кто как читает прокси</h2>
+<p>Главная боль Windows — <strong>разные приложения по-разному слышат прокси</strong>. Это экспериментально проверено за 9 часов настройки:</p>
+<table>
+<thead>
+<tr>
+<th>Приложение</th>
+<th>Что читает</th>
+<th>Если <code>HTTPS_PROXY=http://127.0.0.1:1080</code></th>
+<th>Если system proxy в реестре</th>
+<th>Если TUN</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Claude Code (CLI)</td>
+<td>env <code>HTTPS_PROXY</code></td>
+<td>✓</td>
+<td>✗ (не читает реестр)</td>
+<td>✓ (через loopback)</td>
+</tr>
+<tr>
+<td>curl, gh, pip, npm</td>
+<td>env <code>HTTPS_PROXY</code></td>
+<td>✓</td>
+<td>иногда</td>
+<td>✓</td>
+</tr>
+<tr>
+<td>Chrome / Edge</td>
+<td>Windows system proxy</td>
+<td>✗</td>
+<td>✓</td>
+<td>✓</td>
+</tr>
+<tr>
+<td>Firefox</td>
+<td>свои настройки <code>about:preferences</code></td>
+<td>✗</td>
+<td>✗</td>
+<td>✓</td>
+</tr>
+<tr>
+<td>Telegram Desktop</td>
+<td>system proxy или свои SOCKS5 в настройках</td>
+<td>✗</td>
+<td>✓</td>
+<td>✓</td>
+</tr>
+<tr>
+<td>Telegram Mini App (WebView2)</td>
+<td><strong>только</strong> system proxy</td>
+<td>✗</td>
+<td>✓</td>
+<td>✓</td>
+</tr>
+<tr>
+<td>Discord Desktop (Electron)</td>
+<td>system proxy (с капризами) или флаги запуска</td>
+<td>✗</td>
+<td>иногда</td>
+<td>✓</td>
+</tr>
+<tr>
+<td>Steam клиент</td>
+<td>игнорирует</td>
+<td>✗</td>
+<td>✗</td>
+<td>✓</td>
+</tr>
+<tr>
+<td>Игры через Steam</td>
+<td>игнорируют</td>
+<td>✗</td>
+<td>✗</td>
+<td>✓</td>
+</tr>
+</tbody>
+</table>
+<p>Вывод: <strong>без TUN-режима половина приложений просто не видит прокси</strong>. Это первая причина почему Hiddify в режиме «Proxy only» на Windows лично у меня не работал для Telegram Mini App — WebView2 не читал SOCKS-настройки Telegram клиента.</p>
+<p>TUN-режим sing-box перехватывает весь IP-трафик ещё на уровне сетевой карты, приложениям вообще не надо знать что есть прокси. Дальше sing-box роутит по своим правилам: <code>.ru</code> → direct, иностранное → через VLESS.</p>
+<hr />
+<h2>5. Windows — самая больная часть</h2>
+<p>Я попробовал 4 способа собрать рабочий автозапуск. Три сломались, один взлетел.</p>
+<h3>Способ 1: Hiddify Next</h3>
+<p><strong>Что получил.</strong> Установщик, GUI, встроенный RU bypass по региону.</p>
+<p><strong>Что пошло не так.</strong> Режим «Systemproxy» ставит <code>ProxyServer=http://127.0.0.1:12334</code> в реестре Windows. Telegram клиент и браузеры подхватывают. <strong>WebView2 в Telegram Mini App</strong> — подхватывает тоже, но <code>bot.gazservis72.ru</code> улетает через <code>.ru → direct → RU IP</code>, а сайт стоит за Cloudflare, который на RU IP иногда вылавливает «подозрительное» поведение и не отдаёт JS → Mini App висит на «Загрузка». Discord через system proxy не взлетает вообще — Electron не любит HTTP CONNECT из реестра в режиме Windows proxy.</p>
+<h3>Способ 2: <code>.bat</code> в Startup</h3>
+<p>Простой: батник <code>sing-box run -c config.json</code> в <code>Startup</code> папке. Стартует при логоне.</p>
+<p><strong>Не пошло.</strong> <code>sing-box</code> без admin не может создать TUN-интерфейс → падает с «Access denied». Через <code>Start-Process -Verb RunAs</code> внутри батника — UAC prompt при каждом логоне. Для эпизодического запуска ок, для автостарта «раз и забыл» не подходит.</p>
+<h3>Способ 3: Windows Task Scheduler с <code>RunLevel=Highest</code> + <code>LocalSystem</code></h3>
+<p><strong>Не пошло.</strong> Scheduled Task падал с <code>LastTaskResult=1</code> на старте TUN-интерфейса. Несколько часов дебага, причина не гуглится — StackOverflow молчит, ChatGPT и Claude разводят руками, в event viewer только код без объяснения. Тупик. Подозрение — особенность DispatcherQueue/COM в TaskScheduler контексте. Плюс отдельный бонус — имя пользователя в кириллице («Администратор») через PowerShell <code>New-ScheduledTaskPrincipal -UserId 'Администратор'</code> ломается кодировкой, пришлось переходить на SID.</p>
+<h3>Способ 4: Windows Service через WinSW (сработал, но с нюансом)</h3>
+<p>Канонический путь для длинных процессов на Windows.</p>
+<p><code>WinSW</code> (Windows Service Wrapper) — один <code>exe</code> + XML-конфиг, оборачивает любой exe в Windows-службу.</p>
+<pre><code class="language-xml">&lt;!-- sing-box-service.xml --&gt;
+&lt;service&gt;
+  &lt;id&gt;sing-box&lt;/id&gt;
+  &lt;name&gt;sing-box VPN&lt;/name&gt;
+  &lt;executable&gt;C:\ProgramData\sing-box\sing-box.exe&lt;/executable&gt;
+  &lt;arguments&gt;run -c &quot;C:\ProgramData\sing-box\singbox.json&quot;&lt;/arguments&gt;
+  &lt;workingdirectory&gt;C:\ProgramData\sing-box&lt;/workingdirectory&gt;
+  &lt;startmode&gt;Automatic&lt;/startmode&gt;
+  &lt;onfailure action=&quot;restart&quot; delay=&quot;10 sec&quot;/&gt;
+  &lt;log mode=&quot;roll-by-size&quot;&gt;
+    &lt;sizeThreshold&gt;10240&lt;/sizeThreshold&gt;
+    &lt;keepFiles&gt;2&lt;/keepFiles&gt;
+  &lt;/log&gt;
+&lt;/service&gt;
+</code></pre>
+<pre><code class="language-powershell">.\sing-box-service.exe install
+Start-Service sing-box
+</code></pre>
+<p>Что получаем:<br />
+- Служба стартует <strong>при старте Windows, до логона</strong> (в отличие от TaskScheduler с <code>AtLogOn</code>)<br />
+- <code>LocalSystem</code> имеет admin-права автоматически → TUN-интерфейс создаётся без UAC<br />
+- Автоматический рестарт через 10 секунд если упадёт<br />
+- Логи с ротацией по размеру в рабочей папке</p>
+<p>Это всё, что нужно. Дальше ставим env-переменную для Claude Code:</p>
+<pre><code class="language-powershell">foreach ($v in &quot;HTTPS_PROXY&quot;,&quot;HTTP_PROXY&quot;,&quot;https_proxy&quot;,&quot;http_proxy&quot;) {
+    [Environment]::SetEnvironmentVariable($v, &quot;http://127.0.0.1:1080&quot;, &quot;User&quot;)
+}
+</code></pre>
+<p>и перезапускаем VSCode. Весь остальной трафик идёт через TUN.</p>
+<h3>Нюанс: после первого ребута служба не стартанула</h3>
+<p>Честно — <strong>с первого раза после ребута sing-box не запустился сам</strong>. Служба в статусе Stopped, интернет через VPN не идёт, и классическая засада: <strong>чтобы починить VPN, нужен интернет</strong>. Логов под рукой нет, гуглить не могу, на StackOverflow не зайти, сервис молча лежит.</p>
+<p>Выкрутился через свой же VPS: подключился к нему по SSH (там Claude Code уже стоял, см. секцию 9), попросил Claude Code на VPS разобраться. Он положил рабочий конфиг на VPS по HTTP, продиктовал мне команду для Windows — скачать этот конфиг, пересоздать службу, прописать env-переменные, перезапустить. Я вставлял команды в PowerShell, он читал мой вывод в соседней сессии и корректировал.</p>
+<p>После этого всё встало — и больше <strong>не отваливалось ни разу</strong> (проверено несколькими ребутами). То есть правильный конфиг + правильно установленная служба действительно работают «поставил-забыл», но первая установка на разных машинах может дать сюрпризы — полезно иметь backup-план.</p>
+<p>Этот паттерн («удалённый Claude чинит локальную систему через SSH / копипаст команд») оказался удобнее чем мой исходный план ставить всё через локальный скрипт. В репо для таких случаев есть <a href="https://github.com/DevKitRU/my-vpn-kit/blob/main/docs/first-time-setup.md">docs/first-time-setup.md</a> — подробно про секцию 9.</p>
+<p><strong>Почему не Hiddify.</strong> Он хорош как «поставил-забыл» для обычного пользователя, но: его встроенный роутинг не учитывает РФ-платформы на иностранных TLD (будет секция 8), custom rules в GUI не редактируются (только через кастомный sing-box XML, что обесценивает наличие Hiddify). Плюс Hiddify обновляется — в моменте поведение может поменяться. Для моего use-case (кастомные правила + долгосрочный control) — проще держать sing-box напрямую.</p>
+<p><strong>Почему не v2rayN.</strong> Его routing хранится в SQLite (<code>guiNDB.db</code>), правила задаются через UI, программно управлять этим неудобно. И он тоже Electron-приложение, что добавляет ненужного веса.</p>
+<p><strong>sing-box как Service</strong> — минимальная зависимость (один Go-бинарник + WinSW-обёртка, всего ~40 МБ), конфиг в JSON, всё прозрачно.</p>
+<hr />
+<h2>6. macOS — проще, но есть нюансы</h2>
+<p>На macOS всё собирается за три команды:</p>
+<pre><code class="language-bash">brew install sing-box
+# сгенерить конфиг в ~/.config/sing-box/config.json
+# создать ~/Library/LaunchAgents/com.singbox.vpn.plist
+launchctl load ~/Library/LaunchAgents/com.singbox.vpn.plist
+</code></pre>
+<p>LaunchAgent с <code>KeepAlive=true</code> и <code>RunAtLoad=true</code> — это тот же паттерн что Windows Service, только нативный для macOS. Падения перезапускает сам, стартует при логоне.</p>
+<h3>Gotcha №1: <code>ALL_PROXY=socks5://...</code> не работает с Node.js</h3>
+<p>Первая ошибка, на которую я наступил: поставил <code>export ALL_PROXY=socks5://127.0.0.1:1080</code> в <code>~/.zshrc</code>, думая что это универсальное. Curl с таким env работает, Python requests — работает. <strong>Node.js fetch / https — игнорирует</strong>. Claude Code (CLI на Node.js) продолжал лететь мимо прокси и ловить 403.</p>
+<p>Правильно:</p>
+<pre><code class="language-bash">export http_proxy=http://127.0.0.1:1080
+export https_proxy=http://127.0.0.1:1080
+export HTTP_PROXY=http://127.0.0.1:1080
+export HTTPS_PROXY=http://127.0.0.1:1080
+</code></pre>
+<p>Схема <code>http://</code> на mixed-порт, а не <code>socks5://</code>. Sing-box mixed inbound принимает HTTP CONNECT на том же 1080 где слушает SOCKS.</p>
+<h3>Gotcha №2: нативный Telegram не читает env-переменные</h3>
+<p>Нативные macOS-приложения не читают env, только Terminal-инструменты. Для Telegram / Chrome / Safari нужен <strong>системный SOCKS</strong>:</p>
+<pre><code class="language-bash">networksetup -setsocksfirewallproxy &quot;Wi-Fi&quot; 127.0.0.1 1080
+networksetup -setsocksfirewallproxystate &quot;Wi-Fi&quot; on
+</code></pre>
+<p>Или через GUI: Системные настройки → Сеть → Wi-Fi → Подробнее → Прокси → SOCKS-прокси. После этого все GUI-приложения идут через sing-box.</p>
+<h3>Gotcha №3: <code>detour: direct</code> у DNS-сервера ломает sing-box</h3>
+<p>Неочевидная вещь. В конфиге sing-box 1.13+ у DNS-серверов нельзя ставить <code>detour: direct</code>:</p>
+<pre><code class="language-json">{
+  &quot;tag&quot;: &quot;local-dns&quot;,
+  &quot;type&quot;: &quot;udp&quot;,
+  &quot;server&quot;: &quot;77.88.8.8&quot;,
+  &quot;detour&quot;: &quot;direct&quot;
+}
+</code></pre>
+<p>Ошибка на старте:</p>
+<pre><code>FATAL start service: start dns/udp[local-dns]:
+detour to an empty direct outbound makes no sense
+</code></pre>
+<p>Причём <strong><code>sing-box check -c config.json</code> эту ошибку не ловит</strong> — валидатор говорит OK, sing-box падает молча. Я успел погрешить на сеть, на конфиг VLESS, на DNS провайдера — оказался один параметр.</p>
+<p>Правильно — без <code>detour</code>, sing-box сам решит:</p>
+<pre><code class="language-json">{ &quot;tag&quot;: &quot;local-dns&quot;, &quot;type&quot;: &quot;udp&quot;, &quot;server&quot;: &quot;77.88.8.8&quot; }
+</code></pre>
+<p>Час потерял пока нашёл.</p>
+<hr />
+<h2>7. iOS через Shadowrocket — буфер iCloud вместо ручного ввода</h2>
+<p>Никакого <code>install.sh</code> на iOS не выйдет — Apple не даёт программно настраивать VPN из скрипта. Но <strong>ручками в iPhone тоже ничего вводить не надо</strong>, если есть Mac рядом.</p>
+<p>Shadowrocket покупается в <strong>US App Store</strong> за $2.99 (в российском App Store его нет, карта тоже нужна иностранная). Дальше схема работала так:</p>
+<ol>
+<li>Claude на Mac (через Claude Code) пишет VLESS-ссылку с конкретными параметрами для Reality, копирует её в буфер Mac</li>
+<li>iCloud синхронизирует буфер → на iPhone в Shadowrocket тыкаю «плюс» → <strong>Импортировать из буфера</strong> → профиль импортирован</li>
+<li>Пробую подключиться; если что-то не работает (bad handshake, SNI не проходит) — возвращаюсь к Claude на Mac, <strong>он меняет параметр в ссылке</strong> (например, <code>fp=chrome</code> → <code>fp=firefox</code>, или другой <code>spx</code>), копирует новую версию → iCloud → новый импорт</li>
+<li>Повторяю пока не заработает — без единой строчки вручную набранного текста на iPhone</li>
+</ol>
+<p>Фактически Claude на Mac перебирал параметры VLESS-ссылки, я нажимал «Импорт» и смотрел результат. Удобство — весь debug через копипасту. После 3-4 итераций подбора настройка встала.</p>
+<p>Базовые шаги уже после импорта рабочей ссылки:</p>
+<ul>
+<li>Shadowrocket → главный экран → нижняя плашка режимов → <strong>Прокси</strong> (Global)</li>
+<li>Включить переключатель VPN</li>
+</ul>
+<h3>Безопасные настройки Shadowrocket (можно включать)</h3>
+<ul>
+<li><strong>По требованию → Всегда включено</strong> — Kill Switch (если VPN упал, трафик блокируется)</li>
+<li><strong>Разрешения → Уведомления</strong> — статус в iOS уведомлениях</li>
+<li><strong>Разрешения → Буфер обмена</strong> — удобный импорт серверов</li>
+</ul>
+<h3>Опасные настройки (категорически нельзя)</h3>
+<ul>
+<li><strong>Туннель → Включить все сети</strong> (Force All Networks). Перехватывает трафик на всех сетевых интерфейсах, включая внутренние iOS — iCloud Private Relay, AirDrop, Bonjour. Результат: SSL certificate verification failed на случайных приложениях, крэш всего сетевого стэка iOS.</li>
+<li><strong>Общее → Модули</strong>. Модули расшифровывают HTTPS для модификации трафика (адблок, инъекции) — Shadowrocket подменяет SSL-сертификаты своим CA. iOS видит «сертификат не от Apple / банка / Google» и отказывается подключаться. SSL ломается везде.</li>
+<li><strong>Прокси → Цепь прокси</strong> — цепочка из 2+ серверов, падает любой — падает вся цепь.</li>
+</ul>
+<p>У меня был инцидент: включил Force All Networks, рассуждая «звучит же логично, пусть VPN на всех сетях сразу». Shadowrocket крэшнулся с замершим экраном, VPN не отключался, iPhone на несколько минут остался без интернета вообще. Спасло только полный Reset настроек через меню. После этого правило простое: <strong>если настройка не в списке «безопасных» — не трогать</strong>, даже если она «звучит логично».</p>
+<p>Полный список безопасных/опасных настроек — в <a href="https://github.com/DevKitRU/my-vpn-kit/blob/main/ios/README.md">ios/README.md</a> репозитория.</p>
+<hr />
+<h2>8. Split-tunneling: «банки на .com» — главная боль, которой нет в других проектах</h2>
+<p>Стандартный Russia bypass в Hiddify / antizapret-sing-box / runetfreedom работает по двум правилам:</p>
+<ol>
+<li><code>domain_suffix: [".ru", ".рф", ".su"]</code> — direct</li>
+<li><code>geoip-ru</code> (IP-диапазоны РФ по GeoIP базам) — direct</li>
+</ol>
+<p>Этого достаточно для сайтов вроде yandex.ru, vk.com (резолвится в RU IP), habr.com (аналогично). Не достаточно для:</p>
+<table>
+<thead>
+<tr>
+<th>Сервис</th>
+<th>Домен</th>
+<th>Почему не ловится стандартными правилами</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>STALCRAFT</td>
+<td><code>stalcraft.net</code></td>
+<td><code>.net</code> не в <code>.ru</code> суффиксах; Cloudflare IP не в geoip-ru</td>
+</tr>
+<tr>
+<td>Mail.ru Games</td>
+<td><code>my.games</code>, <code>my.com</code></td>
+<td>то же</td>
+</tr>
+<tr>
+<td>Xsolla (платежи для игр)</td>
+<td><code>xsolla.com</code></td>
+<td>Cloudflare IP, не RU</td>
+</tr>
+<tr>
+<td>Gaijin (War Thunder)</td>
+<td><code>gaijin.net</code>, <code>warthunder.com</code></td>
+<td>CDN не в RU</td>
+</tr>
+<tr>
+<td>Steam серверы</td>
+<td><code>steampowered.com</code>, <code>steamcommunity.com</code></td>
+<td>CDN глобально</td>
+</tr>
+<tr>
+<td>Sber международный</td>
+<td><code>sber.com</code>, <code>sberbank.com</code></td>
+<td>Cloudflare US</td>
+</tr>
+<tr>
+<td>Tinkoff</td>
+<td><code>tinkoff.com</code></td>
+<td>то же</td>
+</tr>
+<tr>
+<td>Wildberries / Ozon (международные API)</td>
+<td><code>wildberries.com</code>, <code>ozon.com</code></td>
+<td>часть трафика через US CDN</td>
+</tr>
+</tbody>
+</table>
+<p>Эти сервисы <strong>проверяют IP клиента</strong>. Зашёл с канадского IP (через VPN) — получаешь бан региона, кикнут с игрового сервера, банк не даст авторизоваться.</p>
+<p>Правильное решение — явно добавить эти TLD в direct-список sing-box:</p>
+<pre><code class="language-json">{
+  &quot;domain_suffix&quot;: [
+    &quot;.ru&quot;, &quot;.рф&quot;, &quot;.su&quot;,
+    &quot;stalcraft.net&quot;, &quot;mail.ru&quot;, &quot;my.games&quot;, &quot;my.com&quot;,
+    &quot;vk.com&quot;, &quot;vk.ru&quot;, &quot;userapi.com&quot;,
+    &quot;sberbank.com&quot;, &quot;sber.com&quot;, &quot;tinkoff.com&quot;, &quot;alfabank.com&quot;,
+    &quot;steampowered.com&quot;, &quot;steamcommunity.com&quot;, &quot;steam-chat.com&quot;,
+    &quot;xsolla.com&quot;, &quot;gaijin.net&quot;, &quot;warthunder.com&quot;,
+    &quot;wildberries.com&quot;, &quot;ozon.com&quot;, &quot;avito.com&quot;,
+    &quot;gosuslugi.ru&quot;, &quot;nalog.gov.ru&quot;
+  ],
+  &quot;action&quot;: &quot;route&quot;,
+  &quot;outbound&quot;: &quot;direct&quot;
+}
+</code></pre>
+<p>В my-vpn-kit эти правила <strong>включены по умолчанию</strong> и распределены по четырём пресетам:</p>
+<ul>
+<li><strong>default</strong> — базовый Russia bypass с расширенным списком выше</li>
+<li><strong>gaming</strong> — с упором на игровые платформы</li>
+<li><strong>dev</strong> — только AI/dev-сервисы через VPN, всё остальное direct (максимально приближено к обычному РФ-инету, с VPN-прикрытием только для Anthropic / OpenAI / GitHub)</li>
+<li><strong>minimalist</strong> — только <code>anthropic.com</code> и <code>openai.com</code> через VPN, всё остальное direct</li>
+</ul>
+<p>Этот список — то, ради чего стоило делать свой проект. В открытых решениях, которые я видел на момент разработки, такого не было.</p>
+<hr />
+<h2>9. Claude-на-VPS — как я на самом деле всё настраивал</h2>
+<p>Это самая практичная часть, которую я хотел бы прочесть <strong>до того как начать</strong>. Если читатель — новичок, у него <strong>нет работающего Claude Code</strong> на локальной машине (Anthropic его не пустит из РФ). Ставить npm-пакет через заблокированный API тоже не получится. А мой скилл как раз и нужен, чтобы поставить VPN, — но чтобы запустить скилл, нужен Claude.</p>
+<p><strong>Выход, который я использовал на всех трёх платформах:</strong> Claude Code ставится не на локальную машину, а на <strong>VPS</strong>. У VPS non-RU IP, Anthropic пускает его без вопросов.</p>
+<pre><code class="language-bash"># SSH на VPS
+ssh root@твой_VPS
+# Установка Node + Claude Code
+curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+apt install -y nodejs
+npm install -g @anthropic-ai/claude-code
+claude auth login   # ссылку OAuth открываешь в любом браузере
+</code></pre>
+<p>Дальше Claude на VPS:<br />
+- Выполняет скилл AndyShaman (поднимает 3x-ui на этом же VPS), получает VLESS<br />
+- Пишет конфиги sing-box для клиентской машины<br />
+- Кладёт их на VPS по HTTP (встроенный <code>python -m http.server 8888</code> — за 10 секунд) и даёт мне команду <code>iwr .../конфиг -o locally</code><br />
+- Диктует команды в PowerShell / bash — я в своей локальной SSH-сессии или терминале вставляю копипастом<br />
+- Читает вывод моих команд, корректирует дальше</p>
+<h3>Мой реальный порядок установки</h3>
+<ol>
+<li><strong>Mac (первый)</strong> — через Claude на VPS. Бóльшая часть конфига, который потом пошёл в my-vpn-kit, была собрана именно тут. Claude на VPS сгенерил <code>config.json</code> → положил на VPS под <code>http://VPS:8888/singbox-mac.json</code> → я скачал на Mac одной командой.</li>
+<li><strong>iPhone (с Mac)</strong> — Shadowrocket настраивал сидя за Mac, где уже работал VPN. Claude на Mac генерил VLESS-ссылку с подбором параметров (Reality иногда капризничает по <code>fp</code> / <code>sni</code> / <code>spx</code>), копировал в буфер Mac → iCloud синхронизировал буфер → на iPhone «Импортировать из буфера» в Shadowrocket. Если первая ссылка не работала, Claude менял один параметр и отдавал новую версию. Всё через копипасту, на iPhone руками не вводил ни одной строки.</li>
+<li><strong>Windows (в последнюю очередь)</strong> — когда установка с нуля через мой же install.ps1 после первого ребута дала сбой (см. нюанс в секции 5), снова пошёл на VPS к Claude. Он смотрел логи службы, подобрал недостающие env-переменные и правильный путь к конфигу. Я вставлял — он читал результат. За 20 минут всё стартовало окончательно.</li>
+</ol>
+<h3>Termius для удобства</h3>
+<p>Для SSH с iPhone использовал <strong>Termius</strong> — бесплатный SSH-клиент с нормальным GUI и синхронизацией ключей. Фактически всю инфраструктуру можно настроить <strong>с телефона</strong>: подключился к VPS, запустил Claude, получил команды, переключился на ноутбук, выполнил. Или через обратный SSH с VPS на локальную машину (если на Windows включён OpenSSH Server).</p>
+<p>Этот подход экономит 2-3 часа новичку и избавляет от необходимости покупать временный публичный VPN только чтобы поставить постоянный свой.</p>
+<p>Полный пошаговый гайд — в <a href="https://github.com/DevKitRU/my-vpn-kit/blob/main/docs/first-time-setup.md">docs/first-time-setup.md</a> репо.</p>
+<hr />
+<h2>10. Что не получилось / не проверено</h2>
+<p>Для чистоты — список того, что я <strong>не</strong> сделал или не идеально:</p>
+<ul>
+<li><strong>Не закрыл SSH сразу после настройки VPS.</strong> Самый болезненный урок из серии «потом закрою». AndyShaman в своём скилле 3x-ui прямо говорит: после установки — <strong>отключить парольный вход SSH, оставить только по ключу</strong>. Плюс хорошая практика — сменить порт с 22 на нестандартный. Я поленился («сначала пусть всё работает») — через несколько недель VPS начал периодически ловить массовый SSH-брутфорс с ботсетей, CPU скакал, мой собственный SSH-коннект падал посреди работы. В итоге закрутил, но лечить уже, а не предотвращать — это разница в два-три вечера времени. Правильный рецепт: как только ключ работает, <strong>сразу</strong> правишь <code>/etc/ssh/sshd_config</code> — <code>PasswordAuthentication no</code>, <code>Port XXXXX</code>, <code>systemctl restart sshd</code>, плюс поставить fail2ban. Делайте сразу, не как я.</li>
+<li><strong>Тест на чистой Windows 11 VM</strong> — не проверил. Windows Sandbox на моей машине не запускается (конфликт с Kaspersky — известная несовместимость). Windows 10 Pro — проверено ребутами, работает.</li>
+<li><strong>TUN через Scheduled Task от SYSTEM</strong> — падал в <code>LastTaskResult=1</code>. Не нашёл точную причину. Обошёл через Windows Service (WinSW) — там от LocalSystem TUN создаётся нормально.</li>
+<li><strong>Android-клиент</strong> — не делал. Можно использовать тот же sing-box через <a href="https://sing-box.sagernet.org/clients/android/">SFA</a>, но пресетов под my-vpn-kit нет.</li>
+<li><strong>Пинг до VPS ~180 мс</strong> (OVH Канада). На работе с API / браузером это не заметно, но для шутеров с outbound через VPN будет чувствоваться. Решение — если играешь в игры через VPN, брать VPS в Европе или Турции; в моём случае игровые домены (STALCRAFT, Steam) идут direct с RU IP через split-tunneling, а 180 мс на Anthropic API — некритично.</li>
+</ul>
+<h3>Что наоборот работает лучше чем ожидал</h3>
+<ul>
+<li><strong>Discord Desktop</strong> — на начальных попытках зависал на «Starting», я уже был готов отправлять его в Web. Но после финальной конфигурации (TUN + LocalSystem + правильные правила routing) всё ожило, Discord стартует нормально, голос работает. Видимо, проблема была в промежуточных итерациях с system proxy, а не в Electron как таковом.</li>
+<li><strong>Автозапуск</strong> — после того как правильный конфиг подхватился, служба стартует до логина, стабильно переживает ребуты. Проверял несколько раз.</li>
+</ul>
+<p>Всё это — кандидаты на следующие итерации через issues.</p>
+<hr />
+<h2>11. Итого и ссылки</h2>
+<p>Сухо:</p>
+<ul>
+<li><strong>Репо:</strong> <a href="https://github.com/DevKitRU/my-vpn-kit">github.com/DevKitRU/my-vpn-kit</a>, MIT. 23 файла, 3 клиентских скилла + пресеты + troubleshooting.</li>
+<li><strong>Серверная часть:</strong> <a href="https://github.com/AndyShaman/3x-ui-skill">AndyShaman/3x-ui-skill</a> — поднимает 3x-ui на чистой VPS за 10 минут.</li>
+<li><strong>Стоимость:</strong> ~670 ₽/мес за VPS (OVH Kimsufi в Канаде). Один раз $2.99 за Shadowrocket на iPhone.</li>
+<li><strong>Платформы:</strong> Windows 10/11 (проверено на 10 Pro), macOS Intel/Apple Silicon, iOS (Shadowrocket).</li>
+<li><strong>Время установки:</strong> 1-2 часа с нуля (включая аренду VPS и настройку).</li>
+</ul>
+<h3>Что в репо посмотреть отдельно</h3>
+<ul>
+<li><a href="https://github.com/DevKitRU/my-vpn-kit/blob/main/windows/install.ps1">windows/install.ps1</a> — парсер VLESS-ссылки на PowerShell, WinSW-установщик, idempotent env-переменные</li>
+<li><a href="https://github.com/DevKitRU/my-vpn-kit/tree/main/shared/presets">shared/presets/</a> — четыре пресета routing-таблицы, JSON с плейсхолдерами</li>
+<li><a href="https://github.com/DevKitRU/my-vpn-kit/blob/main/docs/troubleshooting.md">docs/troubleshooting.md</a> — FAQ по симптомам (Telegram не грузит / Discord висит / Steam в NA регионе)</li>
+<li><a href="https://github.com/DevKitRU/my-vpn-kit/blob/main/docs/first-time-setup.md">docs/first-time-setup.md</a> — гайд для нулёвого пользователя через Claude-на-VPS + Termius</li>
+</ul>
+<h3>Что просит сообщество</h3>
+<p>PR приветствуются особенно по трём направлениям:</p>
+<ol>
+<li><strong>Новые РФ-платформы в direct-список</strong> — если ваш банк / маркетплейс / игра на иностранном TLD и банит не-RU IP, открывайте issue (есть шаблон) с доменами.</li>
+<li><strong>Windows 11 / Windows 10 Home баги</strong> — моя машина Windows 10 Pro, на других версиях могут быть грабли.</li>
+<li><strong>Android-клиент</strong> — пока только iOS, Android не делал.</li>
+</ol>
+<h3>Зачем я это сделал</h3>
+<p>Меня задолбало платить 500-1000 ₽/мес за VPN, который раз в день выбрасывает с ошибкой 403 и ломает рабочий цикл. Каждый реконнект — это минут 10 выкинутого времени, и чем чаще — тем больнее.</p>
+<p>Личный счётчик — <strong>три разных платных VPN за год</strong>, все покупались сразу на годовую подписку (потому что так выгоднее, если реклама не врёт). Каждый исправно работал первый месяц-два, потом что-то ломалось в их инфраструктуре: массово банили IP-подсети, меняли протокол под очередную РКН-блокировку, терялся стабильный exit. Писал в поддержку — тишина или отписки. Возвратов по неиспользованной части года не бывает. Суммарно около 6000 ₽ впустую, на три кривых опыта.</p>
+<p>Свой VPS за 8000 ₽ / год — <strong>и никакого third-party фактора между тобой и API</strong>. Если что-то сломалось — смотришь логи своего sing-box, а не ждёшь когда провайдер починит.</p>
+<p>Проект — не для денег (MIT, поддержка через issues). Хотелось, чтобы начинающему разработчику в РФ (каким я был ещё год назад) не приходилось тратить день на танцы с клиентами и антивирусами — и не сжигать по 2000 ₽ каждые пару месяцев на очередной «надёжный» VPN.</p>
+<p>Если пригодится — звёздочка на репо приятна. Баги в issues ценнее чем звёздочка.</p>
