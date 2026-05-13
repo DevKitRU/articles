@@ -10,7 +10,7 @@
 
 Про sing-box, split-routing, Windows Service, macOS LaunchAgent, iOS через Shadowrocket и стабильный доступ к Claude Code.
 
-Статус: первая версия была в песочнице Хабра, сейчас текст переписывается спокойнее.
+Статус: редакторский черновик после смягчения формулировок.
 
 [Читать черновик](01-my-vpn-kit/habr.md)
 
@@ -22,7 +22,7 @@
 
 Про синхронизацию памяти Claude Code через приватный git-репозиторий, симлинк на macOS/Linux, Junction на Windows, auto-pull и защиту от утечки токенов.
 
-Статус: черновик.
+Статус: черновик после короткого privacy-pass.
 
 [Читать черновик](02-claude-memory-sync/habr.md)
 
@@ -55,8 +55,8 @@
 
 | # | Тема | Статус |
 | --- | --- | --- |
-| 01 | VPN для разработчика | переписывается |
-| 02 | Memory sync для Claude Code | черновик |
+| 01 | VPN для разработчика | редакторский черновик |
+| 02 | Memory sync для Claude Code | privacy-pass сделан |
 | 03 | Project context для Codex и Claude | черновик |
 
 ## Для авторов

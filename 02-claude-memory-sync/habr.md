@@ -14,10 +14,10 @@
 
 Сценарий, который меня задолбал:
 
-- **Понедельник, Mac:** рассказал Claude про нового клиента — фирма Х, у них проблемы с котлом марки Y, предпочитают WhatsApp а не Telegram. Claude прилежно записал в `memory/project_client_X.md` + добавил ссылку в `MEMORY.md`.
+- **Понедельник, Mac:** рассказал Claude про новый рабочий кейс: клиент, тип оборудования, удобный канал связи. Claude прилежно записал это в `memory/project_client_X.md` + добавил ссылку в `MEMORY.md`.
 - **Вторник, Windows:** открываю сессию — Claude меня не узнаёт. *«Здравствуйте! Чем могу помочь?»* Спрашиваю про фирму X — «не имею информации».
 
-Потому что `memory/` локальная. MacBook пишет в `/Users/sergey/.claude/projects/<hash>/memory/`, Windows читает из `C:\Users\Администратор\.claude\projects\<другой-hash>\memory\`, VPS — из своего. Три независимых мирка.
+Потому что `memory/` локальная. MacBook пишет в `/Users/<user>/.claude/projects/<hash>/memory/`, Windows читает из `C:\Users\<user>\.claude\projects\<другой-hash>\memory\`, VPS — из своего. Три независимых мирка.
 
 Решил один раз и навсегда собрать: симлинк на git-репо, auto-pull, pre-commit hook против утечек. Собрал — и заодно оформил в публичный open-source кит, чтобы другим не проходить то же самое.
 
