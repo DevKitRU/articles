@@ -20,11 +20,13 @@ articles/
 |---|------|--------|-----------------|
 | 01 | my-vpn-kit: свой VPN через sing-box для Claude Code и РФ-сервисов | переписывается после отклонения sandbox | [habr.com/ru/sandbox/282028/](https://habr.com/ru/sandbox/282028/) |
 | 02 | claude-memory-sync: память Claude Code между Mac, Windows и VPS через git | черновик | нет |
+| 03 | ai-context-kit: context engineering для Codex и Claude через `docs/ai_context` | черновик | нет |
 
 ## Связанные репо
 
 - [DevKitRU/my-vpn-kit](https://github.com/DevKitRU/my-vpn-kit): статья #01
 - [DevKitRU/claude-memory-sync](https://github.com/DevKitRU/claude-memory-sync): статья #02
+- [DevKitRU/ai-context-kit](https://github.com/DevKitRU/ai-context-kit): статья #03
 - [AiDevKitRU](https://github.com/AiDevKitRU): организация
 
 ## Правила
